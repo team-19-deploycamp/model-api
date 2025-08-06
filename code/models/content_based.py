@@ -2,7 +2,6 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-
 class ContentBasedRecommender:
     def __init__(self, places_df, ratings_df):
         self.places_df = places_df
