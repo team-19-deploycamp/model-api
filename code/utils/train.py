@@ -2,12 +2,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-import matplotlib 
-matplotlib.use('Agg')  # Gunakan backend non-GUI
-import matplotlib.pyplot as plt
-
 import pickle
-
 from surprise.model_selection import train_test_split
 from surprise import accuracy
 from collections import defaultdict
@@ -18,11 +13,12 @@ from models.svd import SVDModel
 from models.baseline import baselineOnly
 from models.knn_basic import KNN
 from models.normal_predictor import normalPredictor
-
+from models.hybird import HybridRecommender
 from sklearn.metrics import precision_recall_curve, average_precision_score
-
 from models.content_based import ContentBasedRecommender
-from getData import load_ratings, load_places
+from getData import load_ratings, load_places, load_users
+from gensim.models import Word2Vec
+
 
 def get_top_n(predictions, n=10):
     top_n = defaultdict(list)
@@ -84,9 +80,9 @@ def split_ratings(ratings_df, test_ratio=0.3):
         test_list.append(test_ratings)
     return pd.concat(train_list), pd.concat(test_list)
 
-def evaluate_cbf(places_df, ratings_df, top_n=10, threshold=4.0):
+def evaluate_cbf(places_df, ratings_df, users_df, top_n=10, threshold=4.0):
     train_df, test_df = split_ratings(ratings_df)
-    cbf = ContentBasedRecommender(places_df, train_df)
+    cbf = ContentBasedRecommender(places_df, train_df, users_df)
     cbf.fit(train_df)
 
     precisions, recalls = [], []
@@ -126,16 +122,56 @@ def evaluate_cbf(places_df, ratings_df, top_n=10, threshold=4.0):
 
     cbf.ratings_df = ratings_df
     cbf.places_df = places_df
+    cbf.users_df = users_df
 
-    with open("../models/cbf.pkl", "wb") as f:
+    with open("../models/cbf_v2.pkl", "wb") as f:
         pickle.dump(cbf, f)
 
     print("✅ Model berhasil disimpan")
+
+# def evaluate_hybrid(cbf_model, svd_model, ratings_df, top_n=10, threshold=4.0, alpha=0.5):
+#     train_df, test_df = split_ratings(ratings_df)
+#     hybrid = HybridRecommender(cbf_model, svd_model, ratings_df, alpha=alpha)
+
+#     precisions, recalls = [], []
+
+#     for user_id in test_df['User_Id'].unique():
+#         test_user_data = test_df[test_df['User_Id'] == user_id]
+#         train_user_data = train_df[train_df['User_Id'] == user_id]
+
+#         if len(train_user_data) < 2 or len(test_user_data) < 1:
+#             continue
+
+#         seen_places = set(train_user_data['Place_Id'])
+#         true_relevant = set(test_user_data[test_user_data['Place_Ratings'] >= threshold]['Place_Id'])
+
+#         recommended = hybrid.recommend(user_id, seen_places, top_n=top_n)
+#         recommended_ids = [pid for pid, _ in recommended]
+
+#         true_positives = len([pid for pid in recommended_ids if pid in true_relevant])
+
+#         precision = true_positives / len(recommended_ids) if recommended_ids else 0
+#         recall = true_positives / len(true_relevant) if true_relevant else 0
+
+#         precisions.append(precision)
+#         recalls.append(recall)
+
+#     if not precisions:
+#         print("Tidak ada cukup data untuk evaluasi Hybrid.")
+#         return
+
+#     avg_precision = np.mean(precisions)
+#     avg_recall = np.mean(recalls)
+
+#     print(f"\n=== Evaluasi Hybrid (Score-Level Fusion, alpha={alpha}) ===")
+#     print(f"Precision@{top_n}: {avg_precision:.4f}")
+#     print(f"Recall@{top_n}: {avg_recall:.4f}")
 
 
 def main():
     data, ratings_df = load_ratings()
     _, places_df = load_places()
+    _, users_df = load_users()
 
     trainset, testset = train_test_split(data, test_size=0.2, random_state=42)
 
@@ -149,28 +185,7 @@ def main():
     for model_name, model in models.items():
         evaluate_model(model_name, model, trainset, testset)
 
-    evaluate_cbf(places_df, ratings_df, top_n=10, threshold=4.0)
-
-    # # Cetak tempat yang telah dirating user 1
-    # sample_user = 1
-    # user_ratings = ratings_df[ratings_df['User_Id'] == sample_user]
-    # user_ratings = user_ratings.sort_values(by='Place_Ratings', ascending=False)
-
-    # print(f"\nTempat yang dirating oleh User {sample_user}:")
-    # for _, row in user_ratings.iterrows():
-    #     place_info = places_df[places_df['Place_Id'] == row['Place_Id']]
-    #     if not place_info.empty:
-    #         place_name = place_info.iloc[0].get('Place_Name', row['Place_Id'])  # fallback ke ID kalau tidak ada nama
-    #     else:
-    #         place_name = row['Place_Id']
-    #     print(f"  {place_name} (ID: {row['Place_Id']}), Rating: {row['Place_Ratings']}")
-
-    # sample_user = 1
-    # print(f"\nTop-10 rekomendasi untuk User {sample_user} (Content-Based):")
-    # recommendations = cbf.recommend(sample_user, top_n=10)
-    # for place_id, score in recommendations:
-    #     place = places_df[places_df['Place_Id'] == place_id].iloc[0]
-    #     print(f"  {place['Place_Name']} (ID: {place_id}), Skor: {score:.4f}")
+    evaluate_cbf(places_df, ratings_df, users_df, top_n=10, threshold=4.0)
 
 if __name__ == "__main__":
     main()

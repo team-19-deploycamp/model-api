@@ -15,7 +15,7 @@ def load_places(path='../../dataset/places.csv'):
     df['Price'] = df['Price'].fillna(df['Price'].mean())
     return None, df
 
-def load_users(path='../../dataset/user.csv'):
+def load_users(path='../../dataset/users.csv'):
     df = pd.read_csv(path)
     df['Location'] = df['Location'].fillna('Unknown')
     df['Age'] = df['Age'].fillna(df['Age'].median())

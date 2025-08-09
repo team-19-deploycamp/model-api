@@ -1,1 +1,4 @@
 prompt.txt
+*.pdf
+node_modules/
+scraper/
