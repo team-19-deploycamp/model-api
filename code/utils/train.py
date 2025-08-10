@@ -13,14 +13,17 @@ from models.svd import SVDModel
 from models.baseline import baselineOnly
 from models.knn_basic import KNN
 from models.normal_predictor import normalPredictor
-from models.hybird import HybridRecommender
+from models.hybird import HybridRecommenderWithXGB
 from sklearn.metrics import precision_recall_curve, average_precision_score
 from models.content_based import ContentBasedRecommender
 from getData import load_ratings, load_places, load_users
-from gensim.models import Word2Vec
+
+from surprise import Dataset, Reader
+from surprise import Dataset, Reader
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 
-def get_top_n(predictions, n=10):
+def get_top_n(predictions, n=20):
     top_n = defaultdict(list)
     for uid, iid, true_r, est, _ in predictions:
         top_n[uid].append((iid, est))
@@ -29,7 +32,7 @@ def get_top_n(predictions, n=10):
         top_n[uid] = user_ratings[:n]
     return top_n
 
-def precision_recall_at_k(predictions, k=10, threshold=4.0):
+def precision_recall_at_k(predictions, k=20, threshold=4.0):
     user_est_true = defaultdict(list)
     for uid, iid, true_r, est, _ in predictions:
         user_est_true[uid].append((est, true_r))
@@ -47,7 +50,7 @@ def precision_recall_at_k(predictions, k=10, threshold=4.0):
         recalls.append(recall)
     return sum(precisions)/len(precisions), sum(recalls)/len(recalls)
 
-def evaluate_model(model_name, model, trainset, testset, n=10, k=10, threshold=4.0):
+def evaluate_model(model_name, model, trainset, testset, n=20, k=20, threshold=4.0):
     print(f"\n=== Evaluating {model_name} ===")
     model.fit(trainset)
     predictions = model.test(testset)
@@ -80,7 +83,7 @@ def split_ratings(ratings_df, test_ratio=0.3):
         test_list.append(test_ratings)
     return pd.concat(train_list), pd.concat(test_list)
 
-def evaluate_cbf(places_df, ratings_df, users_df, top_n=10, threshold=4.0):
+def evaluate_cbf(places_df, ratings_df, users_df, top_n=20, threshold=4.0):
     train_df, test_df = split_ratings(ratings_df)
     cbf = ContentBasedRecommender(places_df, train_df, users_df)
     cbf.fit(train_df)
@@ -124,49 +127,28 @@ def evaluate_cbf(places_df, ratings_df, users_df, top_n=10, threshold=4.0):
     cbf.places_df = places_df
     cbf.users_df = users_df
 
-    with open("../models/cbf_v2.pkl", "wb") as f:
-        pickle.dump(cbf, f)
+    # with open("../models/cbf_v2.pkl", "wb") as f:
+    #     pickle.dump(cbf, f)
 
-    print("✅ Model berhasil disimpan")
+    # print("✅ Model berhasil disimpan")
 
-# def evaluate_hybrid(cbf_model, svd_model, ratings_df, top_n=10, threshold=4.0, alpha=0.5):
-#     train_df, test_df = split_ratings(ratings_df)
-#     hybrid = HybridRecommender(cbf_model, svd_model, ratings_df, alpha=alpha)
+def print_recommendations_for_user(hybrid_model, user_id, places_df, ratings_df, top_n=20):
+    seen_places = set(ratings_df[ratings_df['User_Id'] == user_id]['Place_Id'])
+    
+    candidates = []
+    for place_id in places_df['Place_Id']:
+        if place_id not in seen_places:
+            score = hybrid_model.predict(user_id, place_id)
+            candidates.append((place_id, score))
 
-#     precisions, recalls = [], []
+    # Sort descending by score
+    candidates.sort(key=lambda x: x[1], reverse=True)
 
-#     for user_id in test_df['User_Id'].unique():
-#         test_user_data = test_df[test_df['User_Id'] == user_id]
-#         train_user_data = train_df[train_df['User_Id'] == user_id]
-
-#         if len(train_user_data) < 2 or len(test_user_data) < 1:
-#             continue
-
-#         seen_places = set(train_user_data['Place_Id'])
-#         true_relevant = set(test_user_data[test_user_data['Place_Ratings'] >= threshold]['Place_Id'])
-
-#         recommended = hybrid.recommend(user_id, seen_places, top_n=top_n)
-#         recommended_ids = [pid for pid, _ in recommended]
-
-#         true_positives = len([pid for pid in recommended_ids if pid in true_relevant])
-
-#         precision = true_positives / len(recommended_ids) if recommended_ids else 0
-#         recall = true_positives / len(true_relevant) if true_relevant else 0
-
-#         precisions.append(precision)
-#         recalls.append(recall)
-
-#     if not precisions:
-#         print("Tidak ada cukup data untuk evaluasi Hybrid.")
-#         return
-
-#     avg_precision = np.mean(precisions)
-#     avg_recall = np.mean(recalls)
-
-#     print(f"\n=== Evaluasi Hybrid (Score-Level Fusion, alpha={alpha}) ===")
-#     print(f"Precision@{top_n}: {avg_precision:.4f}")
-#     print(f"Recall@{top_n}: {avg_recall:.4f}")
-
+    print(f"\nTop-{top_n} recommendations for User {user_id}:\n")
+    place_name_dict = places_df.set_index('Place_Id')['Place_Name'].to_dict()
+    for place_id, score in candidates[:top_n]:
+        place_name = place_name_dict.get(place_id, "Unknown Place")
+        print(f"Place ID: {place_id}, Place Name: {place_name}, Predicted Score: {score:.4f}")
 
 def main():
     data, ratings_df = load_ratings()
@@ -185,7 +167,38 @@ def main():
     for model_name, model in models.items():
         evaluate_model(model_name, model, trainset, testset)
 
-    evaluate_cbf(places_df, ratings_df, users_df, top_n=10, threshold=4.0)
+        # if model_name == "SVD":
+        #     with open(f"../models/{model_name}.pkl", "wb") as f:
+        #         pickle.dump(model, f)
+            
+        #     print(f"✅ Model {model_name} berhasil disimpan")
+
+    evaluate_cbf(places_df, ratings_df, users_df, top_n=20, threshold=4.0)
+
+    # Load model yang sudah disimpan
+    with open("../models/SVD.pkl", "rb") as f:
+        svd_model = pickle.load(f)
+
+    with open("../models/cbf_v2.pkl", "rb") as f:
+        cbf_model = pickle.load(f)
+
+    # Buat hybrid model dengan model yang sudah diload
+    hybrid_model = HybridRecommenderWithXGB(svd_model, cbf_model)
+    hybrid_model.fit_meta(trainset)
+
+    hybrid_predictions = hybrid_model.test(testset)
+
+    print("\n=== Evaluating Hybrid Model ===")
+    rmse = accuracy.rmse(hybrid_predictions, verbose=True)
+    mae = accuracy.mae(hybrid_predictions, verbose=True)
+    precision, recall = precision_recall_at_k(hybrid_predictions, k=20, threshold=4.0)
+
+    print(f"Precision@20: {precision:.4f}")
+    print(f"Recall@20: {recall:.4f}")
+
+    print_recommendations_for_user(hybrid_model, user_id=1, places_df=places_df, ratings_df=ratings_df, top_n=20)
+
+    hybrid_model.meta_model.save_model("../models/hybrid_meta_xgb.json")
 
 if __name__ == "__main__":
     main()

@@ -1,33 +1,43 @@
-import numpy as np
-from surprise import SVD
-from surprise import Dataset
-from surprise import Reader
+import xgboost as xgb
 
-class HybridRecommender:
-    def __init__(self, cb_model, svd_model, ratings_df, alpha=0.5):
-        self.cbf = cb_model
+class HybridRecommenderWithXGB:
+    def __init__(self, svd_model, cbf_model):
         self.svd = svd_model
-        self.ratings_df = ratings_df
-        self.alpha = alpha
+        self.cbf = cbf_model
+        self.meta_model = None
 
-    def recommend(self, user_id, seen_places, top_n=10):
-        cbf_recs = self.cbf.recommend(user_id, seen_places=set(seen_places), top_n=100)
-        cbf_scores = {place_id: score for place_id, score in cbf_recs}
+    def fit_meta(self, trainset):
+        X, y = [], []
+        for uid_inner, iid_inner, true_r in trainset.all_ratings():
+            uid = trainset.to_raw_uid(uid_inner)
+            iid = trainset.to_raw_iid(iid_inner)
+            est_svd = self.svd.predict(uid, iid).est
+            est_cbf = self.cbf.predict_single(uid, iid)
+            X.append([est_svd, est_cbf])
+            y.append(true_r)
 
-        all_place_ids = self.cbf.places_df['Place_Id'].tolist()
-        unseen_place_ids = [pid for pid in all_place_ids if pid not in seen_places]
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            'objective': 'reg:squarederror',
+            'eval_metric': 'rmse',
+            'seed': 42,
+        }
+        self.meta_model = xgb.train(params, dtrain, num_boost_round=100)
 
-        hybrid_scores = []
-        for pid in unseen_place_ids:
+
+    def predict(self, uid, iid):
+        est_svd = self.svd.predict(uid, iid).est
+        est_cbf = self.cbf.predict_single(uid, iid)
+        dtest = xgb.DMatrix([[est_svd, est_cbf]])
+        pred = self.meta_model.predict(dtest)[0]
+        return pred
+
+    def test(self, testset):
+        predictions = []
+        for uid, iid, true_r in testset:
             try:
-                svd_score = self.svd.predict(str(user_id), str(pid)).est
-                cbf_score = cbf_scores.get(pid, 0.0)
-                final_score = self.alpha * svd_score + (1 - self.alpha) * cbf_score
-                hybrid_scores.append((pid, final_score))
-            except:
-                continue
-
-        print(f"[DEBUG] SVD Score: {svd_score:.2f}, CBF Score: {cbf_score:.2f}, Final: {final_score:.2f}")
-
-        hybrid_scores.sort(key=lambda x: x[1], reverse=True)
-        return hybrid_scores[:top_n]
+                est = self.predict(uid, iid)
+            except Exception:
+                est = 3.0
+            predictions.append((uid, iid, true_r, est, None))
+        return predictions

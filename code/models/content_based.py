@@ -70,8 +70,24 @@ class ContentBasedRecommender:
         self.build_similarity_matrix()
         for user_id in train_ratings_df['User_Id'].unique():
             self.user_profiles[user_id] = self.build_user_profile(user_id, train_ratings_df)
+    
+    def predict_single(self, user_id, place_id):
+        if user_id not in self.user_profiles:
+            return 3.0  # default rating netral
 
-    def recommend(self, user_id, seen_places, top_n=10):
+        idx_list = self.places_df[self.places_df['Place_Id'] == place_id].index
+        if len(idx_list) == 0:
+            return 3.0  # default rating
+
+        place_embedding = self.embeddings[idx_list[0]].toarray().flatten()
+        score = cosine_similarity([self.user_profiles[user_id]], [place_embedding])[0][0]
+
+        # Normalisasi dari [0,1] ke [1,5]
+        rating = 1 + 4 * score
+        return rating
+
+
+    def recommend(self, user_id, seen_places, top_n=20):
         if user_id not in self.user_profiles:
             return []
 
