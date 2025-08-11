@@ -6,6 +6,7 @@ import random
 import pickle
 import os
 import sys  
+import math
 import xgboost as xgb
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,6 +23,14 @@ with open("../models/cbf_v2.pkl", "rb") as f:
 # Load XGBoost meta model
 meta_model = xgb.Booster()
 meta_model.load_model("../models/hybrid_meta_xgb.json")
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 # Hybrid model class
 class HybridRecommenderWithXGB:
@@ -78,6 +87,8 @@ class Preference(BaseModel):
 
 class PreferenceSubmission(BaseModel):
     User_Id: int
+    Latitude: float
+    Longitude: float
     Preferences: List[Preference]
 
 # ========== GET 20 tempat acak ============
@@ -117,8 +128,10 @@ def get_cold_start_places():
 
 # ========== POST rekomendasi dari input user baru ============
 @app.post("/submit_preference")
-def submit_user_preferences(data: PreferenceSubmission):
+def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float = 10):
     user_id = data.User_Id
+    user_lat = data.Latitude
+    user_lon = data.Longitude
     prefs = data.Preferences
 
     if not prefs:
@@ -143,17 +156,24 @@ def submit_user_preferences(data: PreferenceSubmission):
     recommendations = hybrid_for_new_user.recommend(user_id, seen_places=seen_places, top_n=20)
 
     result = []
-    place_name_dict = places_df.set_index('Place_Id')['Place_Name'].to_dict()
     for place_id, score in recommendations:
         place = places_df[places_df['Place_Id'] == place_id].iloc[0]
+        distance = haversine(user_lat, user_lon, place['Lat'], place['Long'])
+        
         result.append({
             "Place_Id": int(place_id),
             "Place_Name": place['Place_Name'],
             "Category": place['Category'],
             "City": place['City'],
-            "Score": float(round(score, 4))  # konversi ke float native
+            "Distance_km": round(distance, 2),
+            "Score": float(round(score, 4))
         })
 
+    # ✅ Rerank: sort first by distance, then by score
+    result.sort(key=lambda x: (x["Distance_km"], -x["Score"]))
+
+    # Keep top 20 after reranking
+    result = result[:20]
 
     return {
         "User_Id": user_id,

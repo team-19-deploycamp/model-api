@@ -1,0 +1,11 @@
+1. login logout (opsional) -> supabase/firebase
+2. submit preference 
+- place id, place name
+- category (card)
+- submit [post]
+3. response
+- rekomendasi tempat (responses submit preferences)
+4. search based on category
+- e.g. category budaya
+- filter based on historical data ['budaya']
+
