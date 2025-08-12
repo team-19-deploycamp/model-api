@@ -1,0 +1,27 @@
+{
+  "User_Id": 12900,
+  "Latitude": -6.175392,
+  "Longitude": 106.827153,
+  "Preferences": [
+    {
+      "Place_Id": 18,
+      "Rating": 5.0
+    },
+    {
+      "Place_Id": 115,
+      "Rating": 4.5
+    },
+    {
+      "Place_Id": 233,
+      "Rating": 4.5
+    },
+    {
+      "Place_Id": 312,
+      "Rating": 5.0
+    },
+    {
+      "Place_Id": 13,
+      "Rating": 1.0
+    }
+  ]
+}

@@ -1,9 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
+from datetime import datetime
+from rapidfuzz import process, fuzz
+import pytz
 import pandas as pd
 import random
 import pickle
+import re
 import os
 import sys  
 import math
@@ -24,6 +28,23 @@ with open("../models/cbf_v2.pkl", "rb") as f:
 meta_model = xgb.Booster()
 meta_model.load_model("../models/hybrid_meta_xgb.json")
 
+# Waktu sekarang otomatis (WIB)
+tz = pytz.timezone("Asia/Jakarta")
+now = datetime.now(tz)
+current_day = now.strftime("%A")  # "Monday", "Tuesday", dst
+current_time = now.time()
+
+# Map nama hari Indonesia ke English
+day_map = {
+    "Senin": "Monday",
+    "Selasa": "Tuesday",
+    "Rabu": "Wednesday",
+    "Kamis": "Thursday",
+    "Jumat": "Friday",
+    "Sabtu": "Saturday",
+    "Minggu": "Sunday"
+}
+
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # km
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -31,6 +52,42 @@ def haversine(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def normalize_time_str(s):
+    # Ubah 08.00 → 08:00 dan ganti en dash → dash
+    s = s.replace(".", ":").replace("–", "-")
+    # Hapus spasi ganda
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+def is_open(working_hours_str, day, time_now):
+    if pd.isna(working_hours_str):
+        return False
+    
+    entries = working_hours_str.split(" | ")
+    for entry in entries:
+        if ":" not in entry:  # kalau formatnya aneh
+            continue
+        day_part, hours_part = entry.split(":", 1)
+        day_part = day_part.strip()
+        hours_part = normalize_time_str(hours_part.strip().lower())
+
+        # Normalisasi hari
+        day_part_en = day_map.get(day_part, day_part)
+        if day_part_en.lower() == day.lower():
+            if "buka 24 jam" in hours_part:
+                return True
+            if "tutup" in hours_part or "closed" in hours_part:
+                return False
+            if "-" in hours_part:
+                open_str, close_str = hours_part.split("-")
+                try:
+                    open_time = datetime.strptime(open_str.strip(), "%H:%M").time()
+                    close_time = datetime.strptime(close_str.strip(), "%H:%M").time()
+                    return open_time <= time_now <= close_time
+                except ValueError:
+                    return False
+    return False
 
 # Hybrid model class
 class HybridRecommenderWithXGB:
@@ -144,7 +201,7 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
         "Place_Ratings": [p.Rating for p in prefs]
     }
 
-    temp_df = pd.DataFrame(ratings_data)
+    temp_df = pd.DataFrame(ratings_data)    
 
     # Update CBF dengan data preferensi user baru
     cbf_new = type(cbf_model)(places_df, temp_df, users_df)
@@ -158,6 +215,10 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
     result = []
     for place_id, score in recommendations:
         place = places_df[places_df['Place_Id'] == place_id].iloc[0]
+
+        # ✅ Cek buka/tutup
+        open_status = is_open(place['Working_Hours'], current_day, current_time)
+        
         distance = haversine(user_lat, user_lon, place['Lat'], place['Long'])
         
         result.append({
@@ -166,13 +227,14 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
             "Category": place['Category'],
             "City": place['City'],
             "Distance_km": round(distance, 2),
-            "Score": float(round(score, 4))
+            "Score": float(round(score, 4)),
+            "Is_Open": open_status
         })
 
-    # ✅ Rerank: sort first by distance, then by score
-    result.sort(key=lambda x: (x["Distance_km"], -x["Score"]))
+    # ✅ Rerank: tempat buka di atas, lalu urutkan berdasarkan distance & score
+    result.sort(key=lambda x: (not x["Is_Open"], x["Distance_km"], -x["Score"]))
 
-    # Keep top 20 after reranking
+    # Keep top 20
     result = result[:20]
 
     return {

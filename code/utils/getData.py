@@ -7,7 +7,7 @@ def load_ratings(path='../../dataset/ratings.csv'):
     data = Dataset.load_from_df(df[['User_Id', 'Place_Id', 'Place_Ratings']], reader)
     return data, df
 
-def load_places(path='../../dataset/places.csv'):
+def load_places(path='../../dataset/places_v2.csv'):
     df = pd.read_csv(path)
     df['Description'] = df['Description'].fillna('')
     df['Category'] = df['Category'].fillna('')
