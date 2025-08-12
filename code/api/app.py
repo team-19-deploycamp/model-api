@@ -12,6 +12,8 @@ import pandas as pd
 import random
 import pickle
 import re
+import json
+import numpy as np
 import os
 import sys  
 import math
@@ -175,6 +177,46 @@ class HybridRecommenderWithXGB:
         return scores[:top_n]
 
 # ====== CRUD Functions ======
+def save_cbf_profile(user_id: int, profile_vector: np.ndarray):
+    """
+    Menyimpan profil CBF pengguna ke Supabase.
+    """
+    # Mengubah numpy array menjadi list lalu ke JSON string
+    payload = {
+        "user_id": user_id,
+        "cbf_profile": json.dumps(profile_vector.tolist())
+    }
+    
+    try:
+        resp = app.state.supabase.table("cbf_user_profiles").upsert(payload).execute()
+        if not resp.data:
+            print(f"[ERROR] Gagal menyimpan profil CBF untuk user {user_id}")
+            return False
+        return True
+    except APIError as e:
+        print(f"[ERROR] Supabase API Error saat menyimpan profil CBF: {e.message}")
+        return False
+
+def get_cbf_profile(user_id: int) -> Optional[np.ndarray]:
+    """
+    Mengambil profil CBF pengguna dari Supabase.
+    """
+    try:
+        resp = app.state.supabase.table("cbf_user_profiles").select("cbf_profile").eq("user_id", user_id).execute()
+        
+        if resp.data and resp.data[0]["cbf_profile"]:
+            # Mengubah JSON string kembali menjadi numpy array
+            profile_list = json.loads(resp.data[0]["cbf_profile"])
+            return np.array(profile_list)
+        
+        return None
+    except APIError as e:
+        print(f"[ERROR] Supabase API Error saat mengambil profil CBF: {e.message}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Kesalahan saat memproses profil CBF: {str(e)}")
+        return None
+
 
 def get_user_interactions(user_id: int):
     try:
@@ -320,6 +362,10 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
     })
     cbf_new = type(cbf_model)(places_df, temp_df, users_df)
     cbf_new.fit(temp_df)
+    # Ambil profil CBF yang baru dibuat dan simpan secara persisten
+    new_user_cbf_profile = cbf_new.user_profiles[user_id]
+    save_cbf_profile(user_id, new_user_cbf_profile)
+
     hybrid_for_new_user = HybridRecommenderWithXGB(svd_model, cbf_new, meta_model)
     user_hybrid_models[user_id] = hybrid_for_new_user
     recommendations = hybrid_for_new_user.recommend(user_id, seen_places, top_n=20)
@@ -333,8 +379,8 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
             "Place_Name": place['Place_Name'],
             "Category": place['Category'],
             "City": place['City'],
-            "Distance_km": round(distance, 2),
-            "Score": float(round(score, 4)),
+            "Distance_km": float(distance),
+            "Score": float(score),
             "Is_Open": open_status
         })
     result.sort(key=lambda x: (not x["Is_Open"], x["Distance_km"], -x["Score"]))
@@ -371,6 +417,9 @@ def submit_interactions(data: SubmitInteractionsRequest):
     temp_df = pd.DataFrame(temp_data)
     cbf_new = type(cbf_model)(places_df, temp_df, users_df)
     cbf_new.fit(temp_df)
+    # Ambil profil CBF yang baru dibuat dan simpan secara persisten
+    updated_user_cbf_profile = cbf_new.user_profiles[data.User_Id]
+    save_cbf_profile(data.User_Id, updated_user_cbf_profile)
     hybrid_for_new_user = HybridRecommenderWithXGB(svd_model, cbf_new, meta_model)
     user_hybrid_models[data.User_Id] = hybrid_for_new_user
     return {"status": "success", "message": "Interactions saved and user profile updated"}
@@ -383,7 +432,19 @@ def get_recommendations(user_id: int = Query(...), top_n: int = 20):
     profile = get_user_profile(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
-    model_to_use = user_hybrid_models.get(user_id, hybrid_model)
+    # Ambil profil CBF dari database
+    cbf_profile_from_db = get_cbf_profile(user_id)
+
+    model_to_use = None
+    if cbf_profile_from_db is not None:
+        # Jika profil ada di database, rekonstruksi model CBF dan hybrid
+        # Perlu membuat instance CBF model baru dan mengisi user_profiles
+        cbf_reconstructed = type(cbf_model)(places_df, ratings_df, users_df)
+        cbf_reconstructed.user_profiles[user_id] = cbf_profile_from_db
+        model_to_use = HybridRecommenderWithXGB(svd_model, cbf_reconstructed, meta_model)
+    else:
+        # Jika tidak ada, gunakan model global (fallback)
+        model_to_use = hybrid_model
     # Tambahkan baris ini
     if model_to_use == hybrid_model:
         print(f"[DEBUG] Menggunakan model global (fallback) untuk User {user_id}")
@@ -400,8 +461,8 @@ def get_recommendations(user_id: int = Query(...), top_n: int = 20):
             "Place_Name": place['Place_Name'],
             "Category": place['Category'],
             "City": place['City'],
-            "Distance_km": round(distance, 2),
-            "Score": float(round(score, 4)),
+            "Distance_km": float(distance),
+            "Score": float(score),
             "Is_Open": open_status
         })
     result.sort(key=lambda x: (not x["Is_Open"], x["Distance_km"], -x["Score"]))
