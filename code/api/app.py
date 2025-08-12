@@ -229,6 +229,12 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
         "Place_Ratings": [p.Rating for p in prefs]
     }
 
+    interactions = [
+    InteractionItem(Place_Id=p.Place_Id, Action="rate", Rating=p.Rating)
+        for p in prefs
+    ]
+    save_user_interactions(user_id, interactions)
+
     temp_df = pd.DataFrame(ratings_data)    
 
     # Update CBF dengan data preferensi user baru
@@ -284,23 +290,25 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
 # ===== GET: Ambil tempat yang BELUM user rating =====
 @app.get("/interactions")
 def get_unrated_places(user_id: int = Query(...)):
-    # Tempat user sudah rating
     rated_places = {
         pid for pid, inter in get_user_interactions(user_id).items()
         if inter["action"] == "rate"
     }
+
+    # Hapus duplikat di places_df sebelum filter
+    unique_places = places_df.drop_duplicates(subset=["Place_Id"])
+
+    unrated_places = unique_places[~unique_places['Place_Id'].isin(rated_places)]
     
-    # Filter tempat yang belum dirating
-    unrated_places = places_df[~places_df['Place_Id'].isin(rated_places)]
-    
-    result = []
-    for _, row in unrated_places.iterrows():
-        result.append({
+    result = [
+        {
             "Place_Id": int(row['Place_Id']),
             "Place_Name": row['Place_Name'],
             "Category": row['Category'],
             "City": row['City']
-        })
+        }
+        for _, row in unrated_places.iterrows()
+    ]
     
     return result
 
