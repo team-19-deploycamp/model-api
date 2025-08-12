@@ -9,3 +9,5 @@
 - e.g. category budaya
 - filter based on historical data ['budaya']
 
+
+signup -> login -> cold_start [get] -> submit_preferences [post] -> response first recommendation -> 
