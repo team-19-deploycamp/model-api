@@ -3,6 +3,10 @@ from pydantic import BaseModel
 from typing import List, Optional, Literal
 from datetime import datetime
 from rapidfuzz import process, fuzz
+from dotenv import load_dotenv
+from contextlib import asynccontextmanager
+from supabase import create_client, Client
+from postgrest.exceptions import APIError
 import pytz
 import pandas as pd
 import random
@@ -17,6 +21,22 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.getData import load_ratings, load_places, load_users
 
+# Load .env dari folder project
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("Supabase credentials not found")
+
+    app.state.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("[DEBUG] Supabase client initialized")
+    yield
+    print("[DEBUG] Lifespan ended")
+
+app = FastAPI(lifespan=lifespan)
 # Load models
 with open("../models/SVD.pkl", "rb") as f:   
     svd_model = pickle.load(f)
@@ -54,8 +74,6 @@ data, ratings_df = load_ratings()
 _, places_df = load_places()
 _, users_df = load_users()
 
-app = FastAPI()
-
 # ======== Request/Response Schema ============
 class ColdStartRequest(BaseModel):
     selected_place_ids: list[int]
@@ -79,7 +97,7 @@ class InteractionItem(BaseModel):
 
 class SubmitInteractionsRequest(BaseModel):
     User_Id: int
-    Interactions: List[InteractionItem]
+    Interactions: List[InteractionItem] 
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # km
@@ -156,18 +174,103 @@ class HybridRecommenderWithXGB:
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_n]
 
+# ====== CRUD Functions ======
+
 def get_user_interactions(user_id: int):
-    return user_interactions.get(user_id, {})
+    try:
+        # 1. Sesuaikan nama kolom dengan database (huruf kecil semua)
+        # 2. Tangani error dengan try...except
+        resp = app.state.supabase.table("user_interactions").select("*").eq("user_id", user_id).execute()
+
+        # Jika tidak ada data yang ditemukan, kembalikan dictionary kosong
+        if not resp.data:
+            return {}
+
+        # 3. Sesuaikan nama kolom di bagian return dengan database (huruf kecil)
+        return {
+            row["place_id"]: {
+                "action": row["action"],
+                "rating": row["rating"],
+                "timestamp": row["timestamp"]
+            }
+            for row in resp.data
+        }
+    
+    except APIError as e:
+        # Tangani error spesifik dari Supabase/PostgREST
+        raise HTTPException(status_code=500, detail=f"Supabase API Error: {e.message}")
+    except Exception as e:
+        # Tangani error umum lainnya
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 def save_user_interactions(user_id: int, interactions: List[InteractionItem]):
-    if user_id not in user_interactions:
-        user_interactions[user_id] = {}
     for inter in interactions:
-        user_interactions[user_id][inter.Place_Id] = {
+        payload = {
+            "user_id": user_id,
+            "place_id": inter.Place_Id,
             "action": inter.Action,
             "rating": inter.Rating,
             "timestamp": datetime.utcnow().isoformat()
         }
+        
+        try:
+            resp = app.state.supabase.table("user_interactions").upsert(payload).execute()
+            
+            # Di versi terbaru, `resp.data` akan berisi data yang di-upsert jika berhasil.
+            # Jadi, kita bisa cek keberadaan datanya.
+            if not resp.data:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Upsert operation failed for user_interactions with no data returned."
+                )
+
+        except APIError as e:
+            # Tangani exception yang dilempar oleh Supabase client
+            raise HTTPException(status_code=500, detail=f"Supabase API Error: {e.message}")
+        except Exception as e:
+            # Tangani kesalahan tak terduga lainnya
+            raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+def get_user_profile(user_id: int):
+    try:
+        # Gunakan 'user_id' yang sesuai dengan skema tabel
+        resp = app.state.supabase.table("user_profiles").select("*").eq("user_id", user_id).execute()
+
+        # Jika tidak ada data, kembalikan None
+        if not resp.data:
+            return None
+        
+        # Jika ada data, kembalikan baris pertama
+        # Kode ini akan mengembalikan dictionary seperti:
+        # {'user_id': 123, 'lat': -6.123, 'long': 106.456, ...}
+        return resp.data[0]
+
+    except APIError as e:
+        # Tangani error spesifik dari Supabase/PostgREST
+        # Contohnya: kesalahan query, tabel tidak ditemukan, dll.
+        raise HTTPException(status_code=500, detail=f"Supabase API Error: {e.message}")
+    except Exception as e:
+        # Tangani error umum lainnya
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+def save_user_profile(user_id: int, lat: float, lon: float):
+    payload = {"user_id": user_id, "lat": lat, "long": lon} 
+    try:
+        # Coba jalankan pemanggilan Supabase
+        resp = app.state.supabase.table("user_profiles").upsert(payload).execute()
+        
+        # Di versi terbaru, `resp.data` akan kosong jika upsert gagal
+        if not resp.data:
+            raise HTTPException(status_code=500, detail="Upsert operation failed with no data returned.")
+
+    except APIError as e:
+        # Tangkap exception yang dilempar oleh Supabase
+        raise HTTPException(status_code=500, detail=f"Supabase API Error: {e.message}")
+    except Exception as e:
+        # Tangkap kesalahan lain yang tidak terduga
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 # Fit CBF user profiles (penting supaya rekomendasi bisa jalan)
 cbf_model.fit(ratings_df)
@@ -180,92 +283,51 @@ hybrid_model = HybridRecommenderWithXGB(svd_model, cbf_model, meta_model)
 def get_cold_start_places():
     categories = places_df['Category'].dropna().unique()
     selected_places = pd.DataFrame()
-
     for category in categories:
         subset = places_df[places_df['Category'] == category]
         if not subset.empty:
             sampled = subset.sample(n=1, random_state=random.randint(1, 999))
             selected_places = pd.concat([selected_places, sampled])
-
     remaining = 20 - len(selected_places)
-    if remaining > 0:   
+    if remaining > 0:
         remaining_pool = places_df[~places_df['Place_Id'].isin(selected_places['Place_Id'])]
         extra = remaining_pool.sample(n=remaining, random_state=random.randint(1, 999))
         selected_places = pd.concat([selected_places, extra])
-
     selected_places = selected_places.sample(frac=1).reset_index(drop=True)
-
-    result = []
-    for _, row in selected_places.iterrows():
-        result.append({
-            "Place_Id": int(row['Place_Id']),
-            "Place_Name": row['Place_Name'],
-            "Category": row['Category'],
-            "City": row['City'],
-            "Rating": None  # frontend mengisi rating user
-        })
-
+    result = [{
+        "Place_Id": int(row['Place_Id']),
+        "Place_Name": row['Place_Name'],
+        "Category": row['Category'],
+        "City": row['City'],
+        "Rating": None
+    } for _, row in selected_places.iterrows()]
     if not result:
         raise HTTPException(status_code=404, detail="Tidak ada tempat ditemukan.")
-
     return result
 
 # ========== POST rekomendasi dari input user baru ============
 @app.post("/submit_preference")
 def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float = 10):
     user_id = data.User_Id
-    user_lat = data.Latitude
-    user_lon = data.Longitude
-    prefs = data.Preferences
-    global users_df
-
-    if not prefs:
-        raise HTTPException(status_code=400, detail="Preferensi kosong.")
-
-    seen_places = set([p.Place_Id for p in prefs])
-    ratings_data = {
-        "User_Id": [user_id] * len(prefs),
-        "Place_Id": [p.Place_Id for p in prefs],
-        "Place_Ratings": [p.Rating for p in prefs]
-    }
-
-    interactions = [
-    InteractionItem(Place_Id=p.Place_Id, Action="rate", Rating=p.Rating)
-        for p in prefs
-    ]
+    save_user_profile(user_id, data.Latitude, data.Longitude)
+    interactions = [InteractionItem(Place_Id=p.Place_Id, Action="rate", Rating=p.Rating) for p in data.Preferences]
     save_user_interactions(user_id, interactions)
-
-    temp_df = pd.DataFrame(ratings_data)    
-
-    # Update CBF dengan data preferensi user baru
+    seen_places = set(p.Place_Id for p in data.Preferences)
+    temp_df = pd.DataFrame({
+        "User_Id": [user_id] * len(data.Preferences),
+        "Place_Id": [p.Place_Id for p in data.Preferences],
+        "Place_Ratings": [p.Rating for p in data.Preferences]
+    })
     cbf_new = type(cbf_model)(places_df, temp_df, users_df)
     cbf_new.fit(temp_df)
-
-    if user_id not in users_df['User_Id'].values:
-        users_df = pd.concat([
-            users_df,
-            pd.DataFrame([{
-                "User_Id": user_id,
-                "Lat": user_lat,  # harus ada sumber datanya
-                "Long": user_lon
-            }])
-    ], ignore_index=True)
-
-    # Update hybrid model dengan CBF baru untuk user baru
     hybrid_for_new_user = HybridRecommenderWithXGB(svd_model, cbf_new, meta_model)
     user_hybrid_models[user_id] = hybrid_for_new_user
-
-    recommendations = hybrid_for_new_user.recommend(user_id, seen_places=seen_places, top_n=20)
-
+    recommendations = hybrid_for_new_user.recommend(user_id, seen_places, top_n=20)
     result = []
     for place_id, score in recommendations:
         place = places_df[places_df['Place_Id'] == place_id].iloc[0]
-
-        # ✅ Cek buka/tutup
         open_status = is_open(place['Working_Hours'], current_day, current_time)
-        
-        distance = haversine(user_lat, user_lon, place['Lat'], place['Long'])
-        
+        distance = haversine(data.Latitude, data.Longitude, place['Lat'], place['Long'])
         result.append({
             "Place_Id": int(place_id),
             "Place_Name": place['Place_Name'],
@@ -275,55 +337,27 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
             "Score": float(round(score, 4)),
             "Is_Open": open_status
         })
-
-    # ✅ Rerank: tempat buka di atas, lalu urutkan berdasarkan distance & score
     result.sort(key=lambda x: (not x["Is_Open"], x["Distance_km"], -x["Score"]))
-
-    # Keep top 20
-    result = result[:20]
-
-    return {
-        "User_Id": user_id,
-        "Recommendations": result
-    }
+    return {"User_Id": user_id, "Recommendations": result[:20]}
 
 # ===== GET: Ambil tempat yang BELUM user rating =====
 @app.get("/interactions")
 def get_unrated_places(user_id: int = Query(...)):
-    rated_places = {
-        pid for pid, inter in get_user_interactions(user_id).items()
-        if inter["action"] == "rate"
-    }
-
-    # Hapus duplikat di places_df sebelum filter
+    rated_places = {pid for pid, inter in get_user_interactions(user_id).items() if inter["action"] == "rate"}
     unique_places = places_df.drop_duplicates(subset=["Place_Id"])
-
     unrated_places = unique_places[~unique_places['Place_Id'].isin(rated_places)]
-    
-    result = [
-        {
-            "Place_Id": int(row['Place_Id']),
-            "Place_Name": row['Place_Name'],
-            "Category": row['Category'],
-            "City": row['City']
-        }
-        for _, row in unrated_places.iterrows()
-    ]
-    
-    return result
+    return [{
+        "Place_Id": int(row['Place_Id']),
+        "Place_Name": row['Place_Name'],
+        "Category": row['Category'],
+        "City": row['City']
+    } for _, row in unrated_places.iterrows()]
 
 # ===== POST: Submit interaksi baru & update profil user =====
 @app.post("/submit_interactions")
 def submit_interactions(data: SubmitInteractionsRequest):
-    user_id = data.User_Id
-    # user_lat = data.Latitude
-    # user_lon = data.Longitude
-    interactions = data.Interactions
-    global users_df
-
-    save_user_interactions(user_id, interactions)
-
-    user_data = user_interactions[user_id]
+    save_user_interactions(data.User_Id, data.Interactions)
+    user_data = get_user_interactions(data.User_Id)
     temp_data = {
         "User_Id": [],
         "Place_Id": [],
@@ -331,27 +365,14 @@ def submit_interactions(data: SubmitInteractionsRequest):
     }
     for pid, inter in user_data.items():
         if inter["action"] == "rate" and inter["rating"] is not None:
-            temp_data["User_Id"].append(user_id)
+            temp_data["User_Id"].append(data.User_Id)
             temp_data["Place_Id"].append(pid)
             temp_data["Place_Ratings"].append(inter["rating"])
     temp_df = pd.DataFrame(temp_data)
-
     cbf_new = type(cbf_model)(places_df, temp_df, users_df)
     cbf_new.fit(temp_df)
-
-    if user_id not in users_df['User_Id'].values:
-        users_df = pd.concat([
-            users_df,
-            pd.DataFrame([{
-                "User_Id": user_id,
-            }])
-    ], ignore_index=True)
-
     hybrid_for_new_user = HybridRecommenderWithXGB(svd_model, cbf_new, meta_model)
-
-    # Simpan model ke cache
-    user_hybrid_models[user_id] = hybrid_for_new_user
-
+    user_hybrid_models[data.User_Id] = hybrid_for_new_user
     return {"status": "success", "message": "Interactions saved and user profile updated"}
 
 # ===== GET: Ambil rekomendasi terbaru berdasarkan histori interaksi =====
@@ -359,28 +380,21 @@ def submit_interactions(data: SubmitInteractionsRequest):
 def get_recommendations(user_id: int = Query(...), top_n: int = 20):
     user_data = get_user_interactions(user_id)
     seen_places = set(user_data.keys())
-
-    # Gunakan model hybrid khusus user jika ada
-    model_to_use = user_hybrid_models.get(user_id, hybrid_model)
-
-    recommendations = model_to_use.recommend(user_id, seen_places=seen_places, top_n=top_n)
-
-    # Ambil lokasi user dari users_df (asumsi sudah ada kolom Lat, Long)
-    user_row = users_df[users_df['User_Id'] == user_id]
-    if user_row.empty:
+    profile = get_user_profile(user_id)
+    if not profile:
         raise HTTPException(status_code=404, detail="User not found")
-    user_lat = user_row.iloc[0]['Lat']
-    user_lon = user_row.iloc[0]['Long']
-    
+    model_to_use = user_hybrid_models.get(user_id, hybrid_model)
+    # Tambahkan baris ini
+    if model_to_use == hybrid_model:
+        print(f"[DEBUG] Menggunakan model global (fallback) untuk User {user_id}")
+    else:
+        print(f"[DEBUG] Menggunakan model personalisasi untuk User {user_id}")
+    recommendations = model_to_use.recommend(user_id, seen_places, top_n=top_n)
     result = []
     for place_id, score in recommendations:
         place = places_df[places_df['Place_Id'] == place_id].iloc[0]
-
-        # ✅ Cek buka/tutup
         open_status = is_open(place['Working_Hours'], current_day, current_time)
-        
-        distance = haversine(user_lat, user_lon, place['Lat'], place['Long'])
-        
+        distance = haversine(profile["lat"], profile["long"], place['Lat'], place['Long'])
         result.append({
             "Place_Id": int(place_id),
             "Place_Name": place['Place_Name'],
@@ -390,19 +404,8 @@ def get_recommendations(user_id: int = Query(...), top_n: int = 20):
             "Score": float(round(score, 4)),
             "Is_Open": open_status
         })
-
-    # ✅ Rerank: tempat buka di atas, lalu urutkan berdasarkan distance & score
     result.sort(key=lambda x: (not x["Is_Open"], x["Distance_km"], -x["Score"]))
-
-    # Keep top 20
-    result = result[:20]
-
-    print("Current user_hybrid_models keys:", list(user_hybrid_models.keys()))
-
-    return {
-        "User_Id": user_id,
-        "Recommendations": result
-    }
+    return {"User_Id": user_id, "Recommendations": result[:20]}
 
     
 
