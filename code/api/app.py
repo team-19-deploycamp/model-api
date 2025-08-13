@@ -434,7 +434,7 @@ def submit_interactions(data: SubmitInteractionsRequest):
     return {"status": "success", "message": "Interactions saved and user profile updated"}
 
 # ===== GET: Ambil rekomendasi terbaru berdasarkan histori interaksi =====
-@app.get("/recommendation")
+@app.get("/recommendations")
 def get_recommendations(user_id: int = Query(...), top_n: int = 20):
     user_data = get_user_interactions(user_id)
     seen_places = set(user_data.keys())
