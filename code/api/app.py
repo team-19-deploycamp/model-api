@@ -125,7 +125,7 @@ def normalize_time_str(s):
 
 def is_open(working_hours_str, day, time_now):
     if pd.isna(working_hours_str):
-        return False
+        return None
     
     entries = working_hours_str.split(" | ")
     for entry in entries:
