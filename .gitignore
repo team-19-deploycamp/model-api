@@ -1,4 +1,9 @@
-*.txt
+flow.txt
+prompt.txt
+sample_cagar.txt
+sample_taman.txt
+database-config.txt
+sample
 *.pdf
 node_modules/
 scraper/
