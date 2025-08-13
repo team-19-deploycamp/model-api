@@ -179,7 +179,6 @@ class HybridRecommenderWithXGB:
                 except Exception:
                     score = 3.0  # fallback skor
                 scores.append((place_id, score))
-
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_n]
 
@@ -355,7 +354,7 @@ def get_cold_start_places():
     return result
 
 # ========== POST rekomendasi dari input user baru ============
-@app.post("/submit_preference")
+@app.post("/submit_preferences")
 def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float = 10):
     user_id = data.User_Id
     save_user_profile(user_id, data.Latitude, data.Longitude)
@@ -394,7 +393,7 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
     return {"User_Id": user_id, "Recommendations": result[:20]}
 
 # ===== GET: Ambil tempat yang BELUM user rating =====
-@app.get("/interactions")
+@app.get("/unrated_places")
 def get_unrated_places(user_id: int = Query(...)):
     rated_places = {pid for pid, inter in get_user_interactions(user_id).items() if inter["action"] == "rate"}
     unique_places = places_df.drop_duplicates(subset=["Place_Id"])
@@ -447,6 +446,7 @@ def get_recommendations(user_id: int = Query(...), top_n: int = 20):
         # Jika profil ada di database, rekonstruksi model CBF dan hybrid
         # Perlu membuat instance CBF model baru dan mengisi user_profiles
         cbf_reconstructed = type(cbf_model)(places_df, ratings_df, users_df)
+        cbf_reconstructed.build_similarity_matrix()
         cbf_reconstructed.user_profiles[user_id] = cbf_profile_from_db
         model_to_use = HybridRecommenderWithXGB(svd_model, cbf_reconstructed, meta_model)
     else:
