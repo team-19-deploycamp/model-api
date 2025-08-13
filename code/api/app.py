@@ -347,6 +347,7 @@ def get_cold_start_places():
         "Place_Name": row['Place_Name'],
         "Category": row['Category'],
         "City": row['City'],
+        "Price": int(row['Price']),
         "Rating": None
     } for _, row in selected_places.iterrows()]
     if not result:
@@ -386,6 +387,7 @@ def submit_user_preferences(data: PreferenceSubmission, max_distance_km: float =
             "Category": place['Category'],
             "City": place['City'],
             "Distance_km": float(distance),
+            "Price": int(place['Price']),
             "Score": float(score),
             "Is_Open": open_status
         })
@@ -402,7 +404,8 @@ def get_unrated_places(user_id: int = Query(...)):
         "Place_Id": int(row['Place_Id']),
         "Place_Name": row['Place_Name'],
         "Category": row['Category'],
-        "City": row['City']
+        "City": row['City'],
+        "Price": int(row['Price']),
     } for _, row in unrated_places.iterrows()]
 
 # ===== POST: Submit interaksi baru & update profil user =====
@@ -469,6 +472,7 @@ def get_recommendations(user_id: int = Query(...), top_n: int = 20):
             "Category": place['Category'],
             "City": place['City'],
             "Distance_km": float(distance),
+            "Price": int(place['Price']),
             "Score": float(score),
             "Is_Open": open_status
         })
