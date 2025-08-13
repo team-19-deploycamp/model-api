@@ -19,12 +19,15 @@ import sys
 import math
 import xgboost as xgb
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Tambahkan folder 'code' ke sys.path supaya bisa import submodule utils
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # naik dari code/api ke code/
+sys.path.append(BASE_DIR)
 
 from utils.getData import load_ratings, load_places, load_users
 
-# Load .env dari folder project
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+# Load .env dari folder project (di root deploycamp-capstone)
+DOTENV_PATH = os.path.join(BASE_DIR, '.env')
+load_dotenv(dotenv_path=DOTENV_PATH)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,16 +42,20 @@ async def lifespan(app: FastAPI):
     print("[DEBUG] Lifespan ended")
 
 app = FastAPI(lifespan=lifespan)
-# Load models
-with open("../models/SVD.pkl", "rb") as f:   
+
+# Folder models
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+
+# Load pickle models
+with open(os.path.join(MODELS_DIR, "SVD.pkl"), "rb") as f:   
     svd_model = pickle.load(f)
 
-with open("../models/cbf_v2.pkl", "rb") as f:   
+with open(os.path.join(MODELS_DIR, "cbf_v2.pkl"), "rb") as f:   
     cbf_model = pickle.load(f)
 
 # Load XGBoost meta model
 meta_model = xgb.Booster()
-meta_model.load_model("../models/hybrid_meta_xgb.json")
+meta_model.load_model(os.path.join(MODELS_DIR, "hybrid_meta_xgb.json"))
 
 # Waktu sekarang otomatis (WIB)
 tz = pytz.timezone("Asia/Jakarta")
