@@ -19,6 +19,8 @@ import sys
 import math
 import xgboost as xgb
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # Tambahkan folder 'code' ke sys.path supaya bisa import submodule utils
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # naik dari code/api ke code/
 sys.path.append(BASE_DIR)
@@ -28,6 +30,7 @@ from utils.getData import load_ratings, load_places, load_users
 # Load .env dari folder project (di root deploycamp-capstone)
 DOTENV_PATH = os.path.join(BASE_DIR, '.env')
 load_dotenv(dotenv_path=DOTENV_PATH)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,6 +45,20 @@ async def lifespan(app: FastAPI):
     print("[DEBUG] Lifespan ended")
 
 app = FastAPI(lifespan=lifespan)
+
+# Daftar domain yang diizinkan
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173", # Tambahkan ini juga untuk jaga-jaga
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Izinkan semua metode (GET, POST, dll.)
+    allow_headers=["*"], # Izinkan semua header
+)
 
 # Folder models
 MODELS_DIR = os.path.join(BASE_DIR, "models")
